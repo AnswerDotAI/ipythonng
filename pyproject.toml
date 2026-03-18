@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ipythonng"
+version = "0.0.1"
+description = "IPython extension for terminal markdown, kitty images, and richer output history"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ipython>=9.0",
+    "kittytgp>=0.0.2",
+    "rich>=13.0",
+]
+
+[project.scripts]
+ipythonng = "ipythonng.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ipythonng"]

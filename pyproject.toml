@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "ipythonng"
-version = "0.0.1"
+dynamic = ["version"]
 description = "IPython extension for terminal markdown, kitty images, and richer output history"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,5 +17,12 @@ dependencies = [
 [project.scripts]
 ipythonng = "ipythonng.cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["ipythonng"]
+[tool.setuptools]
+package-dir = {"" = "."}
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = { attr = "ipythonng.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["ipythonng*"]

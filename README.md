@@ -10,7 +10,7 @@
 ## Install
 
 ```bash
-pip install ~/aai-ws/kittytgp ~/aai-ws/ipythonng
+pip install ipythonng
 ```
 
 ## Use as an extension

@@ -1,6 +1,4 @@
-import base64
-import io
-import sys
+import base64,fcntl,io,os,pty,signal,struct,sys,termios,tty
 from contextlib import redirect_stdout
 from types import MethodType
 from typing import Any
@@ -42,6 +40,48 @@ class _RenderTarget:
         return 1
 
 
+def _set_pty_size(master_fd):
+    "Copy real terminal size to the PTY."
+    try:
+        sz = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, b'\x00' * 8)
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, sz)
+    except Exception: pass
+
+def _system_pty(self, cmd):
+    "Run `cmd` in a PTY so interactive programs work, capturing output for history."
+    from fastcore.xtras import clean_cli_output
+    cmd = self.var_expand(cmd, depth=1)
+    captured = []
+    def _read(fd):
+        data = os.read(fd, 1024)
+        captured.append(data)
+        return data
+    pid, master_fd = pty.fork()
+    if pid == 0: os.execlp(os.environ.get('SHELL', '/bin/sh'), 'sh', '-c', cmd)
+    _set_pty_size(master_fd)
+    prev_sigwinch = signal.getsignal(signal.SIGWINCH)
+    signal.signal(signal.SIGWINCH, lambda *_: _set_pty_size(master_fd))
+    try:
+        mode = termios.tcgetattr(pty.STDIN_FILENO)
+        tty.setraw(pty.STDIN_FILENO)
+        restore = True
+    except termios.error: restore = False
+    try: pty._copy(master_fd, _read, pty._read)
+    finally:
+        if restore: termios.tcsetattr(pty.STDIN_FILENO, termios.TCSAFLUSH, mode)
+        signal.signal(signal.SIGWINCH, prev_sigwinch)
+    os.close(master_fd)
+    _, status = os.waitpid(pid, 0)
+    exit_code = os.waitstatus_to_exitcode(status)
+    if exit_code > 128: exit_code = -(exit_code - 128)
+    self.user_ns['_exit_code'] = exit_code
+    raw = b''.join(captured).decode('utf-8', errors='replace')
+    clean = clean_cli_output(raw)
+    if clean.strip():
+        ext = getattr(self, '_ipythonng_extension', None)
+        if ext: ext._pty_output = clean
+
+
 class IPythonNGExtension:
     def __init__(self, shell):
         self.shell = shell
@@ -53,11 +93,14 @@ class IPythonNGExtension:
         self._handler_by_mime = {}
         self._added_active_types = set()
         self._original_enable_matplotlib = None
+        self._original_system = None
+        self._pty_output = None
 
     def load(self):
         self._install_renderers()
         self._install_history_patch()
         self._install_matplotlib_patch()
+        self._install_system_pty()
 
     def unload(self):
         for event, callback in self._registered_events: self.shell.events.unregister(event, callback)
@@ -66,6 +109,7 @@ class IPythonNGExtension:
         self.history_manager.store_output = self._original_store_output
         self._pending_store_output.clear()
         if self._original_enable_matplotlib is not None: self.shell.enable_matplotlib = self._original_enable_matplotlib
+        if self._original_system is not None: self.shell.system = self._original_system
 
         for mime, original in self._rendered_mimes.items():
             current = self.shell.mime_renderers.get(mime)
@@ -94,6 +138,10 @@ class IPythonNGExtension:
     def _install_matplotlib_patch(self):
         self._original_enable_matplotlib = self.shell.enable_matplotlib
         self.shell.enable_matplotlib = MethodType(lambda shell, gui=None: self._enable_matplotlib(shell, gui), self.shell)
+
+    def _install_system_pty(self):
+        self._original_system = self.shell.system
+        self.shell.system = MethodType(_system_pty, self.shell)
 
     def _deferred_store_output(self, history_manager, line_num: int) -> None:
         if history_manager.db_log_output: self._pending_store_output.add(line_num)
@@ -210,11 +258,13 @@ class IPythonNGExtension:
         if execution_count is None: return
 
         flat_output = self._flatten_output(execution_count)
-        if flat_output is None: self.history_manager.output_hist_reprs.pop(execution_count, None)
-        else: self.history_manager.output_hist_reprs[execution_count] = flat_output
+        if flat_output is None:
+            flat_output = getattr(self, '_pty_output', None)
+            self._pty_output = None
+        if flat_output is not None: self.history_manager.output_hist_reprs[execution_count] = flat_output
+        else: self.history_manager.output_hist_reprs.pop(execution_count, None)
 
-        should_store = self.history_manager.db_log_output and flat_output is not None and (
-            execution_count in self._pending_store_output or execution_count in self.history_manager.exceptions)
+        should_store = self.history_manager.db_log_output and flat_output is not None
         self._pending_store_output.discard(execution_count)
         if should_store: self._original_store_output(execution_count)
 

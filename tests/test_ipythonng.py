@@ -208,3 +208,48 @@ def test_matplotlib_inline_after_prior_plot_renders_future_plots(shell, monkeypa
     assert PLACEHOLDER in rendered
     assert "\x1b_G" in rendered
     assert "display_data" in output_types
+
+
+def test_system_pty_captures_output_in_history(shell):
+    shell.history_manager.db_log_output = True
+    shell.run_cell("!echo hello_pty_test", store_history=True)
+    (_, _, (_, output)) = list(shell.history_manager.get_range(output=True))[-1]
+    assert "hello_pty_test" in output
+
+
+def test_system_pty_output_persists_across_sessions(shell):
+    shell.history_manager.db_log_output = True
+    result = shell.run_cell("!echo persist_test", store_history=True)
+    shell.history_manager.writeout_cache()
+    shell.history_manager.reset()
+    ec = result.execution_count
+    entries = list(shell.history_manager.get_range(-1, ec, ec + 1, output=True))
+    assert entries and "persist_test" in entries[0][2][1]
+
+
+def test_system_pty_not_clobbered_by_finalize(shell):
+    shell.run_cell("!echo survives_finalize", store_history=True)
+    ec = shell.execution_count - 1
+    assert "survives_finalize" in shell.history_manager.output_hist_reprs.get(ec, "")
+
+
+def test_system_pty_multiline_output(shell):
+    shell.run_cell("!echo line1 && echo line2 && echo line3", store_history=True)
+    ec = shell.execution_count - 1
+    output = shell.history_manager.output_hist_reprs.get(ec, "")
+    assert "line1" in output and "line2" in output and "line3" in output
+
+
+def test_system_pty_alternate_screen_returns_empty(shell):
+    shell.run_cell(r"!printf '\x1b[?1049hhidden\x1b[?1049l'", store_history=True)
+    ec = shell.execution_count - 1
+    output = shell.history_manager.output_hist_reprs.get(ec, "")
+    assert output.strip() == ""
+
+
+def test_system_pty_strips_ansi(shell):
+    shell.run_cell(r"!printf '\x1b[31mred\x1b[0m text'", store_history=True)
+    ec = shell.execution_count - 1
+    output = shell.history_manager.output_hist_reprs.get(ec, "")
+    assert "red text" in output
+    assert "\x1b[" not in output

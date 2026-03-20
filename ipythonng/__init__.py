@@ -1,4 +1,5 @@
-__version__ = "0.0.2"
+__version__ = "0.0.3"
+
 
 
 from .extension import load_ipython_extension, unload_ipython_extension

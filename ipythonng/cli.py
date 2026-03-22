@@ -10,8 +10,9 @@ def parse_flags(args=None):
     ng_flags, ipython_args = [], []
     i = 0
     while i < len(args):
-        if re.match(r'^-[a-zA-Z]$', args[i]) and args[i][1] not in _IPYTHON_SHORT:
-            ng_flags.append(args[i])
+        m = re.match(r'^-([a-zA-Z]+)$', args[i])
+        if m and not any(c in _IPYTHON_SHORT for c in m.group(1)):
+            for c in m.group(1): ng_flags.append(f'-{c}')
             if i+1 < len(args) and not args[i+1].startswith('-'):
                 ng_flags.append(args[i+1])
                 i += 1

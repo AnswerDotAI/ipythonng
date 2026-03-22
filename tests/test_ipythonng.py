@@ -9,6 +9,7 @@ from kittytgp.core import PLACEHOLDER
 from traitlets.config import Config
 
 from ipythonng import load_ipython_extension
+from ipythonng.cli import parse_flags
 
 PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAQAAABi6S9dAAAADElEQVR42mNkYPhfDwADhgGAff/3fwAAAABJRU5ErkJggg=="
 PNG_BYTES = base64.b64decode(PNG_B64)
@@ -253,3 +254,17 @@ def test_system_pty_strips_ansi(shell):
     output = shell.history_manager.output_hist_reprs.get(ec, "")
     assert "red text" in output
     assert "\x1b[" not in output
+
+
+def test_parse_flags_combined_short_flags():
+    assert parse_flags(['-pr']) == (['-p', '-r'], [])
+    assert parse_flags(['-pr', '5']) == (['-p', '-r', '5'], [])
+    assert parse_flags(['-rp']) == (['-r', '-p'], [])
+
+def test_parse_flags_single_flags():
+    assert parse_flags(['-p', '-r']) == (['-p', '-r'], [])
+    assert parse_flags(['-r', '3']) == (['-r', '3'], [])
+
+def test_parse_flags_ipython_flags_pass_through():
+    assert parse_flags(['-m', 'foo']) == ([], ['-m', 'foo'])
+    assert parse_flags(['-c', 'code']) == ([], ['-c', 'code'])

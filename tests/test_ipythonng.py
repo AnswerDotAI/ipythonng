@@ -268,3 +268,46 @@ def test_parse_flags_single_flags():
 def test_parse_flags_ipython_flags_pass_through():
     assert parse_flags(['-m', 'foo']) == ([], ['-m', 'foo'])
     assert parse_flags(['-c', 'code']) == ([], ['-c', 'code'])
+
+
+# --- Patches ---
+
+def test_patch_inspect_getfile_returns_str(monkeypatch):
+    import inspect
+    from pathlib import Path
+    monkeypatch.setattr(inspect, "_orig_getfile", lambda obj: Path("/tmp/demo.py"))
+    assert inspect.getfile(object()) == "/tmp/demo.py"
+    assert isinstance(inspect.getfile(object()), str)
+
+
+def test_patch_syntax_tb_coerces_non_string_msg():
+    from types import SimpleNamespace
+    from IPython.core.ultratb import SyntaxTB
+    calls = []
+    class WeirdMsg:
+        def __str__(self): return "coerced"
+    tb = SyntaxTB(theme_name="linux")
+    tb._orig_structured_traceback = lambda etype,evalue,etb,tb_offset=None,context=5: calls.append((etype, evalue.msg, etb, tb_offset, context)) or ["ok"]
+    err = SimpleNamespace(msg=WeirdMsg())
+    assert tb.structured_traceback(ValueError, err, None, tb_offset=2, context=7) == ["ok"]
+    assert err.msg == "coerced"
+    assert calls == [(ValueError, "coerced", None, 2, 7)]
+
+
+def test_run_cell_magic_awaits_coroutines(shell):
+    async def my_magic(line, cell): return "async_result"
+    shell.register_magic_function(my_magic, magic_kind='cell', magic_name='mytest')
+    result = shell.run_cell("await get_ipython().run_cell_magic('mytest', '', 'hello')", store_history=False)
+    assert not result.error_in_exec
+
+
+def test_await_magic_transforms_cell_magic():
+    from ipythonng.extension import _await_magic
+    lines = ["get_ipython().run_cell_magic('foo', '', 'bar')\n"]
+    assert _await_magic(lines) == ["await get_ipython().run_cell_magic('foo', '', 'bar')\n"]
+
+
+def test_await_magic_no_double_await():
+    from ipythonng.extension import _await_magic
+    lines = ["await get_ipython().run_cell_magic('foo', '', 'bar')\n"]
+    assert _await_magic(lines) == ["await get_ipython().run_cell_magic('foo', '', 'bar')\n"]

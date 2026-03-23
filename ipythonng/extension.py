@@ -1,11 +1,32 @@
-import base64,fcntl,io,os,pty,signal,struct,sys,termios,tty
+import base64,fcntl,inspect,io,os,pty,signal,struct,sys,termios,tty
 from contextlib import redirect_stdout
 from types import MethodType
 from typing import Any
 
+from fastcore.basics import patch,patch_to
+from IPython.core.interactiveshell import InteractiveShell
+from IPython.core.ultratb import SyntaxTB
 from kittytgp import build_render_bytes
 from rich.console import Console
 from rich.markdown import Markdown as RichMarkdown
+
+@patch_to(inspect, nm="getfile")
+def _getfile(obj): return str(inspect._orig_getfile(obj))
+
+@patch()
+def structured_traceback(self:SyntaxTB, etype, evalue, etb, tb_offset=None, context=5):
+    if hasattr(evalue, "msg") and not isinstance(evalue.msg, str): evalue.msg = str(evalue.msg)
+    return self._orig_structured_traceback(etype, evalue, etb, tb_offset=tb_offset, context=context)
+
+@patch()
+async def run_cell_magic(self:InteractiveShell, magic_name, line, cell):
+    result = self._orig_run_cell_magic(magic_name, line, cell)
+    return await result if inspect.iscoroutine(result) else result
+
+def _await_magic(lines):
+    if lines and 'get_ipython().run_cell_magic(' in lines[0] and 'await ' not in lines[0]:
+        lines[0] = 'await ' + lines[0]
+    return lines
 
 _DEFAULT_CELL_SIZE = (8, 16)
 
@@ -271,6 +292,8 @@ class IPythonNGExtension:
 
 def load_ipython_extension(shell):
     if getattr(shell, "_ipythonng_extension", None) is not None: return
+    cts = shell.input_transformer_manager.cleanup_transforms
+    if _await_magic not in cts: cts.append(_await_magic)
     extension = IPythonNGExtension(shell)
     extension.load()
     shell._ipythonng_extension = extension
@@ -280,4 +303,6 @@ def unload_ipython_extension(shell):
     extension = getattr(shell, "_ipythonng_extension", None)
     if extension is None: return
     extension.unload()
+    cts = shell.input_transformer_manager.cleanup_transforms
+    if _await_magic in cts: cts.remove(_await_magic)
     del shell._ipythonng_extension

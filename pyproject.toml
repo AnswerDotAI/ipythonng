@@ -17,12 +17,8 @@ dependencies = [
 [project.scripts]
 ipythonng = "ipythonng.cli:main"
 
-[tool.setuptools]
-package-dir = {"" = "."}
-include-package-data = true
-
 [tool.setuptools.dynamic]
 version = { attr = "ipythonng.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["ipythonng*"]
+include = ["ipythonng"]

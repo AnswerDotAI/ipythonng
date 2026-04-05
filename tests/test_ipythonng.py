@@ -1,8 +1,6 @@
-import base64
-import io
+import base64, io
 
-import kittytgp.core as kittycore
-import pytest
+import kittytgp.core as kittycore, pytest
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 from kittytgp import build_render_bytes
 from kittytgp.core import PLACEHOLDER
@@ -55,9 +53,7 @@ display(Image(data=base64.b64decode(%r), format="png"))
 print("omega")
 42
 """
-        % PNG_B64,
-        store_history=True,
-    )
+        % PNG_B64, store_history=True)
 
     (_, _, (_, output)) = list(shell.history_manager.get_range(output=True))[-1]
     assert output == "alpha\n# Heading\n[image/png]\nomega\n42"
@@ -65,14 +61,10 @@ print("omega")
 
 def test_output_history_persists_flattened_output_across_sessions(shell):
     shell.history_manager.db_log_output = True
-    result = shell.run_cell(
-        """
-from IPython.display import Markdown, display
+    result = shell.run_cell("""from IPython.display import Markdown, display
 print("alpha")
 display(Markdown("## Saved"))
-""",
-        store_history=True,
-    )
+""", store_history=True)
 
     shell.history_manager.writeout_cache()
     shell.history_manager.reset()
@@ -101,9 +93,7 @@ from IPython.display import Image, display
 import base64
 display(Image(data=base64.b64decode(%r), format="png"))
 """
-        % PNG_B64,
-        store_history=True,
-    )
+        % PNG_B64, store_history=True)
 
     rendered = shell._ipythonng_stream.getvalue()
     expected = build_render_bytes(PNG_BYTES, out=GeometryProbe(), cell_width_px=8, cell_height_px=16).decode("utf-8")
@@ -123,9 +113,7 @@ from IPython.display import Image
 import base64
 Image(data=base64.b64decode(%r), format="png")
 """
-        % PNG_B64,
-        store_history=True,
-    )
+        % PNG_B64, store_history=True)
 
     rendered = shell._ipythonng_stream.getvalue()
     expected = build_render_bytes(PNG_BYTES, out=GeometryProbe(), cell_width_px=8, cell_height_px=16).decode("utf-8")
@@ -142,9 +130,7 @@ from IPython.display import Image, display
 import base64
 display(Image(data=base64.b64decode(%r), format="png"))
 """
-        % PNG_B64,
-        store_history=True,
-    )
+        % PNG_B64, store_history=True)
 
     rendered = shell._ipythonng_stream.getvalue()
     expected = build_render_bytes(PNG_BYTES, out=GeometryProbe(), cell_width_px=8, cell_height_px=16).decode("utf-8")
@@ -299,6 +285,14 @@ def test_run_cell_magic_awaits_coroutines(shell):
     shell.register_magic_function(my_magic, magic_kind='cell', magic_name='mytest')
     result = shell.run_cell("await get_ipython().run_cell_magic('mytest', '', 'hello')", store_history=False)
     assert not result.error_in_exec
+
+
+def test_native_cell_magic_awaits_coroutines(shell):
+    async def my_magic(line, cell): return "async_result"
+    shell.register_magic_function(my_magic, magic_kind='cell', magic_name='mytest')
+    result = shell.run_cell("%%mytest\nhello\n", store_history=False)
+    assert not result.error_in_exec
+    assert result.result == "async_result"
 
 
 def test_await_magic_transforms_cell_magic():

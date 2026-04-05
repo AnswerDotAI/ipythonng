@@ -1,4 +1,4 @@
-import base64,fcntl,inspect,io,os,pty,signal,struct,sys,termios,tty
+import base64,fcntl,inspect,io,os,pty,signal,sys,termios,tty
 from contextlib import redirect_stdout
 from types import MethodType
 from typing import Any
@@ -24,8 +24,7 @@ async def run_cell_magic(self:InteractiveShell, magic_name, line, cell):
     return await result if inspect.iscoroutine(result) else result
 
 def _await_magic(lines):
-    if lines and 'get_ipython().run_cell_magic(' in lines[0] and 'await ' not in lines[0]:
-        lines[0] = 'await ' + lines[0]
+    if lines and 'get_ipython().run_cell_magic(' in lines[0] and 'await ' not in lines[0]: lines[0] = 'await ' + lines[0]
     return lines
 
 _DEFAULT_CELL_SIZE = (8, 16)
@@ -292,8 +291,8 @@ class IPythonNGExtension:
 
 def load_ipython_extension(shell):
     if getattr(shell, "_ipythonng_extension", None) is not None: return
-    cts = shell.input_transformer_manager.cleanup_transforms
-    if _await_magic not in cts: cts.append(_await_magic)
+    lts = shell.input_transformer_manager.line_transforms
+    if _await_magic not in lts: lts.append(_await_magic)
     extension = IPythonNGExtension(shell)
     extension.load()
     shell._ipythonng_extension = extension
@@ -303,6 +302,6 @@ def unload_ipython_extension(shell):
     extension = getattr(shell, "_ipythonng_extension", None)
     if extension is None: return
     extension.unload()
-    cts = shell.input_transformer_manager.cleanup_transforms
-    if _await_magic in cts: cts.remove(_await_magic)
+    lts = shell.input_transformer_manager.line_transforms
+    if _await_magic in lts: lts.remove(_await_magic)
     del shell._ipythonng_extension

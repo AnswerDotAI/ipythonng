@@ -2,7 +2,7 @@ import os,re,sys
 
 from IPython import start_ipython
 
-_IPYTHON_SHORT = set('mch')
+_IPYTHON_SHORT = set('mc')
 
 def parse_flags(args=None):
     "Split args into (ng_flags, ipython_args), setting IPYTHONNG_FLAGS env var."

@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.0.4
+
+### New Features
+
+- Avoid double-await ([#4](https://github.com/AnswerDotAI/ipythonng/issues/4))
+- Add async cell magic support, inspect.getfile patch, SyntaxTB msg coercion, and tests ([#3](https://github.com/AnswerDotAI/ipythonng/issues/3))
+
+
 ## 0.0.3
 
 ### New Features

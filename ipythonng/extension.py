@@ -141,6 +141,9 @@ class IPythonNGExtension:
             if mime in self.shell.display_formatter.active_types: self.shell.display_formatter.active_types.remove(mime)
 
     def _install_renderers(self):
+        try: from ipykernel.zmqshell import ZMQInteractiveShell
+        except Exception: ZMQInteractiveShell = None
+        if ZMQInteractiveShell is not None and isinstance(self.shell, ZMQInteractiveShell): return
         self._add_renderer("text/markdown", self._handle_text_markdown)
         self._add_renderer("image/png", self._handle_image_png)
 

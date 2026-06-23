@@ -1,9 +1,10 @@
 import base64,fcntl,inspect,io,os,pty,signal,sys,termios,tty
-from contextlib import redirect_stdout
+from contextlib import contextmanager,redirect_stdout
 from types import MethodType
 from typing import Any
 
 from fastcore.basics import patch,patch_to
+from IPython.core.history import HistoryOutput
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.ultratb import SyntaxTB
 from kittytgp import build_render_bytes
@@ -67,6 +68,16 @@ def _set_pty_size(master_fd):
         fcntl.ioctl(master_fd, termios.TIOCSWINSZ, sz)
     except Exception: pass
 
+def _add_stream(shell, text, typ="out_stream"):
+    shell.history_manager.outputs[shell.execution_count-1].append(HistoryOutput(typ, {"stream": [text]}))
+
+@contextmanager
+def _publishing(shell):
+    pub,prev = shell.display_pub,shell.display_pub._is_publishing
+    pub._is_publishing = True
+    try: yield
+    finally: pub._is_publishing = prev
+
 def _system_pty(self, cmd):
     "Run `cmd` in a PTY so interactive programs work, capturing output for history."
     from fastcore.xtras import clean_cli_output
@@ -97,9 +108,7 @@ def _system_pty(self, cmd):
     self.user_ns['_exit_code'] = exit_code
     raw = b''.join(captured).decode('utf-8', errors='replace')
     clean = clean_cli_output(raw)
-    if clean.strip():
-        ext = getattr(self, '_ipythonng_extension', None)
-        if ext: ext._pty_output = clean
+    if clean.strip(): _add_stream(self, clean)
 
 
 class IPythonNGExtension:
@@ -114,7 +123,6 @@ class IPythonNGExtension:
         self._added_active_types = set()
         self._original_enable_matplotlib = None
         self._original_system = None
-        self._pty_output = None
 
     def load(self):
         self._install_renderers()
@@ -245,9 +253,11 @@ class IPythonNGExtension:
         if self._needs_execute_result_newline(): self._write("\n")
         self._write(payload.decode("utf-8"))
 
-    def _handle_text_markdown(self, markdown_text: str, metadata=None): self._render_markdown(markdown_text)
+    def _handle_text_markdown(self, markdown_text: str, metadata=None):
+        with _publishing(self.shell): self._render_markdown(markdown_text)
 
-    def _handle_image_png(self, png_b64: str, metadata=None): self._render_png(png_b64, metadata)
+    def _handle_image_png(self, png_b64: str, metadata=None):
+        with _publishing(self.shell): self._render_png(png_b64, metadata)
 
     def _render_history_output(self, output) -> str:
         if output.output_type in {"out_stream", "err_stream"}: return "".join(output.bundle.get("stream", []))
@@ -276,16 +286,29 @@ class IPythonNGExtension:
         if not pieces: return None
         return "".join(pieces)
 
+    def _cell_outputs(self, n):
+        "Jupyter-style outputs for cell `n`."
+        res = []
+        for o in self.history_manager.outputs.get(n, []):
+            data = {k:list(v) if isinstance(v,list) else v for k,v in o.bundle.items()}
+            if o.output_type in {"out_stream", "err_stream"}:
+                txt = ''.join(''.join(v) if isinstance(v,list) else v for v in data.values())
+                res.append(dict(output_type="stream", name="stderr" if o.output_type=="err_stream" else "stdout", text=txt))
+            elif o.output_type == "display_data": res.append(dict(output_type="display_data", data=data, metadata={}))
+            elif o.output_type == "execute_result": res.append(dict(output_type="execute_result", execution_count=n, data=data, metadata={}))
+            else: raise ValueError(f"Unknown output type: {o.output_type}")
+        if exc := self.history_manager.exceptions.get(n): res.append(dict(output_type="error", **exc))
+        return res
+
     def _finalize_history(self, result):
         execution_count = getattr(result, "execution_count", None)
         if execution_count is None: return
 
         flat_output = self._flatten_output(execution_count)
-        if flat_output is None:
-            flat_output = getattr(self, '_pty_output', None)
-            self._pty_output = None
         if flat_output is not None: self.history_manager.output_hist_reprs[execution_count] = flat_output
         else: self.history_manager.output_hist_reprs.pop(execution_count, None)
+
+        self.shell.user_ns["Out"][execution_count] = self._cell_outputs(execution_count)
 
         should_store = self.history_manager.db_log_output and flat_output is not None
         self._pending_store_output.discard(execution_count)

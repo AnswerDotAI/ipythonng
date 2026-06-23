@@ -1,4 +1,4 @@
-import base64, io
+import base64,io,sys
 
 import kittytgp.core as kittycore, pytest
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
@@ -6,11 +6,15 @@ from kittytgp import build_render_bytes
 from kittytgp.core import PLACEHOLDER
 from traitlets.config import Config
 
-from ipythonng import load_ipython_extension
+from ipythonng import load_ipython_extension,unload_ipython_extension
 from ipythonng.cli import parse_flags
 
 PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAQAAABi6S9dAAAADElEQVR42mNkYPhfDwADhgGAff/3fwAAAABJRU5ErkJggg=="
 PNG_BYTES = base64.b64decode(PNG_B64)
+
+def cell_out(shell, code):
+    res = shell.run_cell(code, store_history=True)
+    return shell.user_ns["Out"][res.execution_count]
 
 
 class FakeTerminal(io.StringIO):
@@ -81,6 +85,26 @@ def test_tracebacks_are_included_in_flattened_output(shell):
     (_, _, (_, output)) = list(shell.history_manager.get_range(output=True))[-1]
     assert "ZeroDivisionError" in output
     assert "division by zero" in output
+
+
+def test_out_stores_jupyter_result(shell):
+    assert cell_out(shell, "1+1") == [{
+        "output_type": "execute_result", "execution_count": 1,
+        "data": {"text/plain": "2"}, "metadata": {}}]
+
+
+def test_out_stores_stdout_and_stderr(shell):
+    out = cell_out(shell, "import sys\nprint('hello')\nprint('oops', file=sys.stderr)")
+    assert out == [
+        {"output_type": "stream", "name": "stdout", "text": "hello\n"},
+        {"output_type": "stream", "name": "stderr", "text": "oops\n"}]
+
+
+def test_out_stores_error(shell):
+    out = cell_out(shell, "1/0")
+    assert len(out) == 1 and out[0]["output_type"] == "error"
+    assert out[0]["ename"] == "ZeroDivisionError"
+    assert out[0]["evalue"] == "division by zero"
 
 
 def test_kitty_rendering_matches_kittytgp_outside_tmux(shell, monkeypatch):
@@ -197,11 +221,70 @@ def test_matplotlib_inline_after_prior_plot_renders_future_plots(shell, monkeypa
     assert "display_data" in output_types
 
 
+def test_out_stores_display_image(shell):
+    out = cell_out(shell, """import base64
+from IPython.display import Image,display
+display(Image(data=base64.b64decode(%r), format='png'))
+""" % PNG_B64)
+    assert [o["output_type"] for o in out] == ["display_data"]
+    assert out[0]["data"]["image/png"] == PNG_B64
+
+
+def test_out_stores_image_result(shell):
+    out = cell_out(shell, """import base64
+from IPython.display import Image
+Image(data=base64.b64decode(%r), format='png')
+""" % PNG_B64)
+    assert [o["output_type"] for o in out] == ["execute_result"]
+    assert out[0]["data"]["image/png"] == PNG_B64
+
+
+def test_out_preserves_mixed_output_order(shell):
+    out = cell_out(shell, """import base64
+from IPython.display import Image,display
+print('before')
+display(Image(data=base64.b64decode(%r), format='png'))
+print('after')
+42
+""" % PNG_B64)
+    assert [o["output_type"] for o in out] == ["stream", "display_data", "stream", "execute_result"]
+    assert out[0]["text"] == "before\n"
+    assert out[1]["data"]["image/png"] == PNG_B64
+    assert out[2]["text"] == "after\n"
+    assert out[3]["data"]["text/plain"] == "42"
+
+
+def test_renderer_bytes_are_not_stored(shell, monkeypatch):
+    monkeypatch.setattr(shell, "_ipythonng_stream", sys.stdout)
+    out = cell_out(shell, """import base64
+from IPython.display import Image,display
+display(Image(data=base64.b64decode(%r), format='png'))
+""" % PNG_B64)
+    assert [o["output_type"] for o in out] == ["display_data"]
+    assert all("\x1b_G" not in o.get("text", "") for o in out)
+
+
 def test_system_pty_captures_output_in_history(shell):
     shell.history_manager.db_log_output = True
     shell.run_cell("!echo hello_pty_test", store_history=True)
     (_, _, (_, output)) = list(shell.history_manager.get_range(output=True))[-1]
     assert "hello_pty_test" in output
+
+
+def test_system_pty_captures_output_in_out(shell):
+    out = cell_out(shell, "!echo hello_out_test")
+    assert out == [{"output_type": "stream", "name": "stdout", "text": "hello_out_test\n"}]
+
+
+def test_rehashed_command_captures_output_in_out(shell):
+    shell.run_cell("%rehashx", store_history=True)
+    out = cell_out(shell, "echo hello_rehash_test")
+    assert out == [{"output_type": "stream", "name": "stdout", "text": "hello_rehash_test\n"}]
+
+
+def test_system_pty_preserves_stream_order(shell):
+    out = cell_out(shell, "print('before')\nget_ipython().system('echo middle')\nprint('after')")
+    assert ''.join(o["text"] for o in out) == "before\nmiddle\nafter\n"
 
 
 def test_system_pty_output_persists_across_sessions(shell):
@@ -232,6 +315,7 @@ def test_system_pty_alternate_screen_returns_empty(shell):
     ec = shell.execution_count - 1
     output = shell.history_manager.output_hist_reprs.get(ec, "")
     assert output.strip() == ""
+    assert shell.user_ns["Out"][ec] == []
 
 
 def test_system_pty_strips_ansi(shell):
@@ -240,6 +324,14 @@ def test_system_pty_strips_ansi(shell):
     output = shell.history_manager.output_hist_reprs.get(ec, "")
     assert "red text" in output
     assert "\x1b[" not in output
+
+
+def test_unload_keeps_old_out_and_restores_standard_cache(shell):
+    old = cell_out(shell, "1+1")
+    unload_ipython_extension(shell)
+    res = shell.run_cell("2+2", store_history=True)
+    assert shell.user_ns["Out"][1] == old
+    assert shell.user_ns["Out"][res.execution_count] == 4
 
 
 def test_parse_flags_combined_short_flags():

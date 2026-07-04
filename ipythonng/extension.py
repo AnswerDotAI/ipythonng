@@ -231,7 +231,7 @@ class IPythonNGExtension:
 
         target = _RenderTarget(stream)
         try:
-            png_bytes = base64.b64decode(png_b64)
+            png_bytes = png_b64 if isinstance(png_b64, bytes) else base64.b64decode(png_b64)
             payload = build_render_bytes(png_bytes, out=target)
         except RuntimeError:
             try:

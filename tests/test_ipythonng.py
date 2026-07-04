@@ -120,6 +120,26 @@ Image(data=base64.b64decode(%r), format="png")
     assert rendered == "\n" + expected
 
 
+def test_raw_png_bytes_render_like_pil(shell, monkeypatch):
+    "PIL-style _repr_png_ returns raw bytes, not base64 str like matplotlib/IPython.display.Image"
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(kittycore.secrets, "randbelow", lambda _: 0x555555 - 1)
+
+    shell.run_cell(
+        """
+import base64
+class RawPng:
+    def _repr_png_(self): return base64.b64decode(%r)
+RawPng()
+"""
+        % PNG_B64, store_history=True)
+
+    rendered = shell._ipythonng_stream.getvalue()
+    expected = build_render_bytes(PNG_BYTES, out=GeometryProbe(), cell_width_px=8, cell_height_px=16).decode("utf-8")
+    assert rendered == "\n" + expected
+    assert "[image/png]" not in rendered
+
+
 def test_kitty_rendering_matches_kittytgp_inside_tmux(shell, monkeypatch):
     monkeypatch.setenv("TMUX", "/tmp/tmux")
     monkeypatch.setattr(kittycore.secrets, "randbelow", lambda _: 0x654321 - 1)

@@ -4,6 +4,7 @@ from types import MethodType
 from typing import Any
 
 from fastcore.basics import patch,patch_to
+from IPython.core.history import HistoryOutput
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.ultratb import SyntaxTB
 from kittytgp import build_render_bytes
@@ -277,13 +278,12 @@ class IPythonNGExtension:
         return "".join(pieces)
 
     def _finalize_history(self, result):
+        pty_output,self._pty_output = self._pty_output,None
         execution_count = getattr(result, "execution_count", None)
         if execution_count is None: return
 
+        if pty_output: self.history_manager.outputs[execution_count].append(HistoryOutput(output_type="out_stream", bundle={"stream": [pty_output]}))
         flat_output = self._flatten_output(execution_count)
-        if flat_output is None:
-            flat_output = getattr(self, '_pty_output', None)
-            self._pty_output = None
         if flat_output is not None: self.history_manager.output_hist_reprs[execution_count] = flat_output
         else: self.history_manager.output_hist_reprs.pop(execution_count, None)
 

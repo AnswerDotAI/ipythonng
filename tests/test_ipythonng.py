@@ -234,6 +234,28 @@ def test_system_pty_alternate_screen_returns_empty(shell):
     assert output.strip() == ""
 
 
+def test_system_pty_output_recorded_in_history_outputs(shell):
+    shell.run_cell("!echo in_outputs", store_history=True)
+    ec = shell.execution_count - 1
+    outs = shell.history_manager.outputs.get(ec, [])
+    streams = ["".join(o.bundle.get("stream", [])) for o in outs if o.output_type == "out_stream"]
+    assert any("in_outputs" in s for s in streams)
+
+
+def test_system_pty_merges_with_printed_output(shell):
+    shell.run_cell("print('printed'); get_ipython().system('echo from_pty')", store_history=True)
+    ec = shell.execution_count - 1
+    output = shell.history_manager.output_hist_reprs.get(ec, "")
+    assert "printed" in output and "from_pty" in output
+
+
+def test_system_pty_does_not_leak_into_next_cell(shell):
+    shell.run_cell("print('x'); get_ipython().system('echo leaky')", store_history=True)
+    shell.run_cell("pass", store_history=True)
+    ec = shell.execution_count - 1
+    assert "leaky" not in shell.history_manager.output_hist_reprs.get(ec, "")
+
+
 def test_system_pty_strips_ansi(shell):
     shell.run_cell(r"!printf '\x1b[31mred\x1b[0m text'", store_history=True)
     ec = shell.execution_count - 1

@@ -120,6 +120,26 @@ Image(data=base64.b64decode(%r), format="png")
     assert rendered == "\n" + expected
 
 
+def test_raw_png_bytes_render_like_pil(shell, monkeypatch):
+    "PIL-style _repr_png_ returns raw bytes, not base64 str like matplotlib/IPython.display.Image"
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(kittycore.secrets, "randbelow", lambda _: 0x555555 - 1)
+
+    shell.run_cell(
+        """
+import base64
+class RawPng:
+    def _repr_png_(self): return base64.b64decode(%r)
+RawPng()
+"""
+        % PNG_B64, store_history=True)
+
+    rendered = shell._ipythonng_stream.getvalue()
+    expected = build_render_bytes(PNG_BYTES, out=GeometryProbe(), cell_width_px=8, cell_height_px=16).decode("utf-8")
+    assert rendered == "\n" + expected
+    assert "[image/png]" not in rendered
+
+
 def test_kitty_rendering_matches_kittytgp_inside_tmux(shell, monkeypatch):
     monkeypatch.setenv("TMUX", "/tmp/tmux")
     monkeypatch.setattr(kittycore.secrets, "randbelow", lambda _: 0x654321 - 1)
@@ -232,6 +252,28 @@ def test_system_pty_alternate_screen_returns_empty(shell):
     ec = shell.execution_count - 1
     output = shell.history_manager.output_hist_reprs.get(ec, "")
     assert output.strip() == ""
+
+
+def test_system_pty_output_recorded_in_history_outputs(shell):
+    shell.run_cell("!echo in_outputs", store_history=True)
+    ec = shell.execution_count - 1
+    outs = shell.history_manager.outputs.get(ec, [])
+    streams = ["".join(o.bundle.get("stream", [])) for o in outs if o.output_type == "out_stream"]
+    assert any("in_outputs" in s for s in streams)
+
+
+def test_system_pty_merges_with_printed_output(shell):
+    shell.run_cell("print('printed'); get_ipython().system('echo from_pty')", store_history=True)
+    ec = shell.execution_count - 1
+    output = shell.history_manager.output_hist_reprs.get(ec, "")
+    assert "printed" in output and "from_pty" in output
+
+
+def test_system_pty_does_not_leak_into_next_cell(shell):
+    shell.run_cell("print('x'); get_ipython().system('echo leaky')", store_history=True)
+    shell.run_cell("pass", store_history=True)
+    ec = shell.execution_count - 1
+    assert "leaky" not in shell.history_manager.output_hist_reprs.get(ec, "")
 
 
 def test_system_pty_strips_ansi(shell):

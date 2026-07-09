@@ -99,7 +99,7 @@ def _report_stop(shell, job):
     n = next((k for k,v in jobs.items() if v is job), None) or max(jobs, default=0)+1
     jobs[n] = job
     print(f'\n[{n}]+ Stopped  {job.cmd}')
-    shell.user_ns['_exit_code'] = 148  # 128+SIGTSTP, as bash
+    shell.user_ns['_exit_code'] = 128 + signal.SIGTSTP  # as bash reports it
 
 def _finish_fg(shell, job):
     "Reap `job` and hand its output to history"

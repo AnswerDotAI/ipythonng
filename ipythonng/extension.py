@@ -7,6 +7,8 @@ from fastcore.basics import patch,patch_to
 from IPython.core.history import HistoryOutput
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.ultratb import SyntaxTB
+from IPython.core.prefilter import is_shadowed
+from IPython.terminal.interactiveshell import TerminalInteractiveShell
 from kittytgp import build_render_bytes
 from rich.console import Console
 from rich.markdown import Markdown as RichMarkdown
@@ -23,6 +25,16 @@ def structured_traceback(self:SyntaxTB, etype, evalue, etb, tb_offset=None, cont
 async def run_cell_magic(self:InteractiveShell, magic_name, line, cell):
     result = self._orig_run_cell_magic(magic_name, line, cell)
     return await result if inspect.iscoroutine(result) else result
+
+@patch
+def check_complete(self:TerminalInteractiveShell, code):
+    "Complete when the prefilter will hand a single-line command to a magic or alias, else defer to Python judgment"
+    line = code.strip()
+    if '\n' not in line:
+        word,_,rest = line.partition(' ')
+        if self.automagic and rest[:1] not in ('=',',') and self.find_magic(word) and not is_shadowed(word, self):
+            return 'complete', ''
+    return self._orig_check_complete(code)
 
 def _await_magic(lines):
     if lines and 'get_ipython().run_cell_magic(' in lines[0] and 'await ' not in lines[0]: lines[0] = 'await ' + lines[0]

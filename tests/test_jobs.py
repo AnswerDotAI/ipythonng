@@ -1,9 +1,10 @@
-import os, signal, time, pytest
+import os, select, signal, time, pytest
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 from traitlets.config import Config
 
 from ipythonng import load_ipython_extension
 from ipythonng.jobs import spawn_job, copy_job, finish_job
+import ipythonng.jobs
 
 def attach(job):
     "Run `job` against dummy in/out pipes, returning why it detached"
@@ -16,6 +17,10 @@ def kill(job):
     try: os.killpg(job.pgid, signal.SIGKILL)
     except ProcessLookupError: pass
     return finish_job(job)
+
+def wait_gone(job, timeout=5):
+    "Wait for `job` to finish: its status pipe hits EOF when the shepherd exits"
+    return bool(select.select([job.status_r], [], [], timeout)[0])
 
 def test_signal_suspends():
     job = spawn_job('sleep 5')
@@ -85,7 +90,31 @@ def test_fg_resumes(shell):
 
 def test_bg_runs_without_terminal(shell):
     shell.run_cell('!kill -TSTP 0 && echo done', store_history=True)
+    job = next(iter(shell._ipythonng_jobs.values()))
     shell.run_cell('%bg', store_history=True)
-    time.sleep(0.5)
+    assert wait_gone(job)
     shell.run_cell('%fg', store_history=True)
     assert shell._ipythonng_jobs=={} and shell.user_ns['_exit_code']==0
+
+def test_spawn_failure_raises_cleanly(monkeypatch):
+    def boom(*a): raise OSError('shepherd broke')
+    monkeypatch.setattr(ipythonng.jobs, '_shepherd', boom)
+    with pytest.raises(OSError, match='failed to start job'): spawn_job('true')
+
+def test_fg_rejects_bad_job(shell, capsys):
+    shell.run_cell('%fg nope', store_history=True)
+    assert 'no such job: nope' in capsys.readouterr().err
+
+def test_jobs_notices_bg_exit(shell, capsys):
+    shell.run_cell('!kill -TSTP 0', store_history=True)
+    shell.run_cell('%bg', store_history=True)
+    assert wait_gone(next(iter(shell._ipythonng_jobs.values())))
+    capsys.readouterr()
+    shell.run_cell('%jobs', store_history=True)
+    assert 'done' in capsys.readouterr().out
+
+def test_many_fg_commands(shell):
+    for i in range(15):
+        shell.run_cell(f'!echo hi{i}', store_history=True)
+        assert shell.user_ns['_exit_code']==0
+        assert f'hi{i}' in shell.history_manager.output_hist_reprs.get(shell.execution_count-1, '')

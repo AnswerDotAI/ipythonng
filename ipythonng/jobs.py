@@ -1,5 +1,5 @@
-"Job control for PTY commands, via a shepherd process that relays suspend/exit events"
-import os, pty, select
+"Job control for PTY commands, via a shepherd process that relays suspends and carries the exit status"
+import os, pty, select, signal
 from fastcore.basics import store_attr
 
 __all__ = ['Job', 'spawn_job', 'copy_job', 'finish_job']
@@ -8,8 +8,15 @@ class Job:
     "A PTY command: `pid` is its shepherd, `pgid` the command's own process group"
     def __init__(self, cmd, pid, pgid, master_fd, status_r):
         store_attr()
-        self.captured,self.exit_code,self.state = [],None,'running'
+        self.captured,self.state = [],'running'
     def __repr__(self): return f'Job({self.cmd!r}, pgid={self.pgid}, {self.state})'
+    def status(self):
+        "Refresh and return `state`, noticing a background job that has stopped or exited"
+        while self.state=='running' and select.select([self.status_r], [], [], 0)[0]:
+            msg = _read_line(self.status_r)
+            if msg.startswith('stopped'): self.state = 'stopped'
+            elif not msg: self.state = 'done'
+        return self.state
 
 def _read_line(fd):
     buf = b''
@@ -23,10 +30,13 @@ def _writen(fd, data):
     while data: data = data[os.write(fd, data):]
 
 def _shepherd(cmd, sh, status_w):
-    "Run `cmd` in its own pgrp (keeps it suspendable) and relay its events -- runs inside the pty session"
+    "Run `cmd` in its own pgrp (keeps it suspendable) and relay its stops -- runs inside the pty session"
     cmd_pid = os.fork()
     if cmd_pid==0:
         os.setpgid(0, 0)
+        signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        os.tcsetpgrp(0, os.getpgrp())
+        signal.signal(signal.SIGTTOU, signal.SIG_DFL)  # SIG_IGN would survive the exec
         os.execlp(sh, 'sh', '-c', cmd)
     try: os.setpgid(cmd_pid, cmd_pid)
     except OSError: pass
@@ -37,7 +47,6 @@ def _shepherd(cmd, sh, status_w):
         if os.WIFSTOPPED(st): os.write(status_w, b'stopped\n')
         else:
             ec = os.waitstatus_to_exitcode(st)
-            os.write(status_w, f'exited {ec}\n'.encode())
             os._exit(ec if ec>=0 else 128-ec)
 
 def spawn_job(cmd, sh=None):
@@ -50,8 +59,11 @@ def spawn_job(cmd, sh=None):
         try: _shepherd(cmd, sh, status_w)
         finally: os._exit(127)
     os.close(status_w)
-    pgid = int(_read_line(status_r).split()[1])
-    return Job(cmd, pid, pgid, master_fd, status_r)
+    msg = _read_line(status_r).split()
+    if not msg or msg[0]!='pgid':
+        os.close(master_fd); os.close(status_r); os.waitpid(pid, 0)
+        raise OSError(f'failed to start job: {cmd!r}')
+    return Job(cmd, pid, int(msg[1]), master_fd, status_r)
 
 def _drain(job, out_fd):
     "Forward any buffered pty output"
@@ -78,13 +90,11 @@ def copy_job(job, in_fd=pty.STDIN_FILENO, out_fd=pty.STDOUT_FILENO):
             if data: _writen(job.master_fd, data)
             else: fds.remove(in_fd)
         if job.status_r in rfds:
-            msg = _read_line(job.status_r).split()
-            if msg and msg[0]=='stopped':
+            if _read_line(job.status_r).startswith('stopped'):
                 _drain(job, out_fd)
                 job.state = 'stopped'
                 return 'stopped'
-            if msg and msg[0]=='exited': job.exit_code = int(msg[1])
-            fds.remove(job.status_r)
+            fds.remove(job.status_r)  # EOF: shepherd has exited
 
 def finish_job(job):
     "Reap the shepherd, then close the pty; returns the command's exit code (negative = killed by that signal)"

@@ -128,31 +128,32 @@ class JobMagics(Magics):
     "Job control magics: `%jobs`, `%fg`, `%bg`"
     def _pick(self, line):
         jobs = self.shell._ipythonng_jobs
-        n = int(line) if line.strip() else max(jobs, default=0)
+        try: n = int(line) if line.strip() else max(jobs, default=0)
+        except ValueError: n = None
         if n not in jobs: return print(f'no such job: {line.strip() or "(none)"}', file=sys.stderr)
         return jobs[n]
+
+    def _resume(self, line):
+        if (j := self._pick(line)) is None: return
+        try: os.killpg(j.pgid, signal.SIGCONT)
+        except ProcessLookupError: pass
+        j.state = 'running'
+        return j
 
     @line_magic
     def jobs(self, line=''):
         "List stopped and backgrounded jobs"
-        for n,j in sorted(self.shell._ipythonng_jobs.items()): print(f'[{n}]  {j.state:8} {j.cmd}')
+        for n,j in sorted(self.shell._ipythonng_jobs.items()): print(f'[{n}]  {j.status():8} {j.cmd}')
 
     @line_magic
     def fg(self, line=''):
         "Resume job `line` (default: most recent) in the foreground"
-        if (j := self._pick(line)) is None: return
-        try: os.killpg(j.pgid, signal.SIGCONT)
-        except ProcessLookupError: pass
-        j.state = 'running'
-        _run_fg(self.shell, j)
+        if (j := self._resume(line)) is not None: _run_fg(self.shell, j)
 
     @line_magic
     def bg(self, line=''):
         "Resume job `line` (default: most recent) in the background"
-        if (j := self._pick(line)) is None: return
-        try: os.killpg(j.pgid, signal.SIGCONT)
-        except ProcessLookupError: pass
-        j.state = 'running'
+        self._resume(line)
 
 
 class IPythonNGExtension:

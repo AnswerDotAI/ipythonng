@@ -5,6 +5,9 @@ from typing import Any
 
 from fastcore.basics import patch,patch_to
 from IPython.core.history import HistoryOutput
+from IPython.core.magic import Magics, line_magic, magics_class
+
+from .jobs import spawn_job, copy_job, finish_job
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.ultratb import SyntaxTB
 from IPython.core.prefilter import is_shadowed
@@ -81,38 +84,75 @@ def _set_pty_size(master_fd):
     except Exception: pass
 
 def _system_pty(self, cmd):
-    "Run `cmd` in a PTY so interactive programs work, capturing output for history."
-    from fastcore.xtras import clean_cli_output
+    "Run `cmd` in a PTY with job control, capturing output for history"
     cmd = self.var_expand(cmd, depth=1)
-    captured = []
-    def _read(fd):
-        data = os.read(fd, 1024)
-        captured.append(data)
-        return data
-    pid, master_fd = pty.fork()
-    if pid == 0: os.execlp(os.environ.get('SHELL', '/bin/sh'), 'sh', '-c', cmd)
-    _set_pty_size(master_fd)
+    _run_fg(self, spawn_job(cmd))
+
+def _run_fg(shell, job):
+    "Attach `job` to the terminal until it exits or is suspended"
+    _set_pty_size(job.master_fd)
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)
-    signal.signal(signal.SIGWINCH, lambda *_: _set_pty_size(master_fd))
+    signal.signal(signal.SIGWINCH, lambda *_: _set_pty_size(job.master_fd))
     try:
         mode = termios.tcgetattr(pty.STDIN_FILENO)
         tty.setraw(pty.STDIN_FILENO)
         restore = True
     except termios.error: restore = False
-    try: pty._copy(master_fd, _read, pty._read)
+    try: reason = copy_job(job)
     finally:
         if restore: termios.tcsetattr(pty.STDIN_FILENO, termios.TCSAFLUSH, mode)
         signal.signal(signal.SIGWINCH, prev_sigwinch)
-    os.close(master_fd)
-    _, status = os.waitpid(pid, 0)
-    exit_code = os.waitstatus_to_exitcode(status)
-    if exit_code > 128: exit_code = -(exit_code - 128)
-    self.user_ns['_exit_code'] = exit_code
-    raw = b''.join(captured).decode('utf-8', errors='replace')
-    clean = clean_cli_output(raw)
+    if reason=='stopped': _report_stop(shell, job)
+    else: _finish_fg(shell, job)
+
+def _report_stop(shell, job):
+    "Add suspended `job` to the jobs table and report it"
+    jobs = shell._ipythonng_jobs
+    n = next((k for k,v in jobs.items() if v is job), None) or max(jobs, default=0)+1
+    jobs[n] = job
+    print(f'\n[{n}]+ Stopped  {job.cmd}')
+    shell.user_ns['_exit_code'] = 128 + signal.SIGTSTP  # as bash reports it
+
+def _finish_fg(shell, job):
+    "Reap `job` and hand its output to history"
+    from fastcore.xtras import clean_cli_output
+    shell._ipythonng_jobs = {k:v for k,v in shell._ipythonng_jobs.items() if v is not job}
+    shell.user_ns['_exit_code'] = finish_job(job)
+    clean = clean_cli_output(b''.join(job.captured).decode('utf-8', errors='replace'))
     if clean.strip():
-        ext = getattr(self, '_ipythonng_extension', None)
+        ext = getattr(shell, '_ipythonng_extension', None)
         if ext: ext._pty_output = clean
+
+@magics_class
+class JobMagics(Magics):
+    "Job control magics: `%jobs`, `%fg`, `%bg`"
+    def _pick(self, line):
+        jobs = self.shell._ipythonng_jobs
+        n = int(line) if line.strip() else max(jobs, default=0)
+        if n not in jobs: return print(f'no such job: {line.strip() or "(none)"}', file=sys.stderr)
+        return jobs[n]
+
+    @line_magic
+    def jobs(self, line=''):
+        "List stopped and backgrounded jobs"
+        for n,j in sorted(self.shell._ipythonng_jobs.items()): print(f'[{n}]  {j.state:8} {j.cmd}')
+
+    @line_magic
+    def fg(self, line=''):
+        "Resume job `line` (default: most recent) in the foreground"
+        if (j := self._pick(line)) is None: return
+        try: os.killpg(j.pgid, signal.SIGCONT)
+        except ProcessLookupError: pass
+        j.state = 'running'
+        _run_fg(self.shell, j)
+
+    @line_magic
+    def bg(self, line=''):
+        "Resume job `line` (default: most recent) in the background"
+        if (j := self._pick(line)) is None: return
+        try: os.killpg(j.pgid, signal.SIGCONT)
+        except ProcessLookupError: pass
+        j.state = 'running'
 
 
 class IPythonNGExtension:
@@ -306,6 +346,8 @@ class IPythonNGExtension:
 
 def load_ipython_extension(shell):
     if getattr(shell, "_ipythonng_extension", None) is not None: return
+    shell._ipythonng_jobs = getattr(shell, "_ipythonng_jobs", {})
+    shell.register_magics(JobMagics(shell))
     lts = shell.input_transformer_manager.line_transforms
     if _await_magic not in lts: lts.append(_await_magic)
     extension = IPythonNGExtension(shell)

@@ -198,6 +198,7 @@ class IPythonNGExtension:
         try: from ipykernel.zmqshell import ZMQInteractiveShell
         except Exception: ZMQInteractiveShell = None
         if ZMQInteractiveShell is not None and isinstance(self.shell, ZMQInteractiveShell): return
+        if not hasattr(self.shell, "mime_renderers"): return
         self._add_renderer("text/markdown", self._handle_text_markdown)
         self._add_renderer("image/png", self._handle_image_png)
 

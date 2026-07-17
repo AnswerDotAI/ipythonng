@@ -36,7 +36,8 @@ def _shepherd(cmd, sh, status_w):
         os.setpgid(0, 0)
         signal.signal(signal.SIGTTOU, signal.SIG_IGN)
         os.tcsetpgrp(0, os.getpgrp())
-        signal.signal(signal.SIGTTOU, signal.SIG_DFL)  # SIG_IGN would survive the exec
+        # reset childs disposition
+        for s in (signal.SIGINT,signal.SIGQUIT,signal.SIGTSTP,signal.SIGTTIN,signal.SIGTTOU,signal.SIGPIPE): signal.signal(s, signal.SIG_DFL)
         os.execlp(sh, 'sh', '-c', cmd)
     try: os.setpgid(cmd_pid, cmd_pid)
     except OSError: pass

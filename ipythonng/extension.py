@@ -4,11 +4,11 @@ from types import MethodType
 from typing import Any
 
 from fastcore.basics import patch,patch_to
+from fastcore.aio import enable_async_magics, disable_async_magics
 from IPython.core.history import HistoryOutput
 from IPython.core.magic import Magics, line_magic, magics_class
 
 from .jobs import spawn_job, copy_job, finish_job
-from IPython.core.interactiveshell import InteractiveShell
 from IPython.core.ultratb import SyntaxTB
 from IPython.core.prefilter import is_shadowed
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
@@ -24,11 +24,6 @@ def structured_traceback(self:SyntaxTB, etype, evalue, etb, tb_offset=None, cont
     if hasattr(evalue, "msg") and not isinstance(evalue.msg, str): evalue.msg = str(evalue.msg)
     return self._orig_structured_traceback(etype, evalue, etb, tb_offset=tb_offset, context=context)
 
-@patch()
-async def run_cell_magic(self:InteractiveShell, magic_name, line, cell):
-    result = self._orig_run_cell_magic(magic_name, line, cell)
-    return await result if inspect.iscoroutine(result) else result
-
 @patch
 def check_complete(self:TerminalInteractiveShell, code):
     "Complete when the prefilter will hand a single-line command to a magic or alias, else defer to Python judgment"
@@ -39,9 +34,6 @@ def check_complete(self:TerminalInteractiveShell, code):
             return 'complete', ''
     return self._orig_check_complete(code)
 
-def _await_magic(lines):
-    if lines and 'get_ipython().run_cell_magic(' in lines[0] and 'await ' not in lines[0]: lines[0] = 'await ' + lines[0]
-    return lines
 
 _DEFAULT_CELL_SIZE = (8, 16)
 
@@ -350,8 +342,7 @@ def load_ipython_extension(shell):
     if getattr(shell, "_ipythonng_extension", None) is not None: return
     shell._ipythonng_jobs = getattr(shell, "_ipythonng_jobs", {})
     shell.register_magics(JobMagics(shell))
-    lts = shell.input_transformer_manager.line_transforms
-    if _await_magic not in lts: lts.append(_await_magic)
+    enable_async_magics(shell)
     extension = IPythonNGExtension(shell)
     extension.load()
     shell._ipythonng_extension = extension
@@ -361,6 +352,5 @@ def unload_ipython_extension(shell):
     extension = getattr(shell, "_ipythonng_extension", None)
     if extension is None: return
     extension.unload()
-    lts = shell.input_transformer_manager.line_transforms
-    if _await_magic in lts: lts.remove(_await_magic)
+    disable_async_magics(shell)
     del shell._ipythonng_extension

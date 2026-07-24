@@ -338,12 +338,11 @@ def test_native_cell_magic_awaits_coroutines(shell):
 
 
 def test_await_magic_transforms_cell_magic():
-    from ipythonng.extension import _await_magic
-    lines = ["get_ipython().run_cell_magic('foo', '', 'bar')\n"]
-    assert _await_magic(lines) == ["await get_ipython().run_cell_magic('foo', '', 'bar')\n"]
-
+    from fastcore.aio import _await_magics
+    src = "get_ipython().run_cell_magic('foo', '', 'bar')\n"
+    assert _await_magics(src) == "await get_ipython()._amagic(get_ipython().run_cell_magic('foo', '', 'bar'))\n"
 
 def test_await_magic_no_double_await():
-    from ipythonng.extension import _await_magic
-    lines = ["await get_ipython().run_cell_magic('foo', '', 'bar')\n"]
-    assert _await_magic(lines) == ["await get_ipython().run_cell_magic('foo', '', 'bar')\n"]
+    from fastcore.aio import _await_magics
+    src = "await get_ipython()._amagic(get_ipython().run_cell_magic('foo', '', 'bar'))\n"
+    assert _await_magics(src) == src

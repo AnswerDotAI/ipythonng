@@ -6,8 +6,7 @@
 - `image/png` rendering via `kittytgp`
 - matplotlib inline support
 - Includes display objects, streams, and rich results in stored history
-- Job control for shell commands: suspend the running command (Ctrl-Z by
-  default), then `jobs`, `fg`, and `bg` as in bash
+- Job control for shell commands: suspend the running command (Ctrl-Z by default), then `jobs`, `fg`, and `bg` as in bash
 
 ## Install
 
@@ -35,5 +34,4 @@ For matplotlib, `%matplotlib inline` works with the existing `image/png` rendere
 
 ## Convenience launcher
 
-The package also installs an `ipythonng` command that simply starts IPython with
-`--ext ipythonng`.
+The package also installs an `ipythonng` command that simply starts IPython with `--ext ipythonng`.

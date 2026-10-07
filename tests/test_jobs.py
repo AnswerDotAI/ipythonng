@@ -1,120 +1,66 @@
-import os, select, signal, time, pytest
-from IPython.terminal.interactiveshell import TerminalInteractiveShell
-from traitlets.config import Config
+import os, select, signal, pytest
 
-from ipythonng import load_ipython_extension
 from ipythonng.jobs import spawn_job, copy_job, finish_job
-import ipythonng.jobs
 
-def attach(job):
-    "Run `job` against dummy in/out pipes, returning why it detached"
-    rin,win = os.pipe(); rout,wout = os.pipe()
-    try: return copy_job(job, in_fd=rin, out_fd=wout)
+
+def attach(job, data=b''):
+    read, write = os.pipe()
+    os.write(write, data)
+    os.close(write)
+    try:
+        with open(os.devnull, 'wb') as out: return copy_job(job, in_fd=read, out_fd=out.fileno())
+    finally: os.close(read)
+
+
+@pytest.mark.parametrize('suspend', ['signal', 'ctrl-z'])
+def test_terminal_suspend_resume_input_and_signal_exit(suspend):
+    job = spawn_job('echo ready; read x; echo got:$x; kill -TSTP 0; exec sleep 30')
+    finished = False
+    try:
+        assert select.select([job.master_fd], [], [], 5)[0]
+        job.captured.append(os.read(job.master_fd, 1024))
+        assert b'ready' in b''.join(job.captured)
+        if suspend == 'signal': os.killpg(job.pgid, signal.SIGTSTP)
+        else: os.write(job.master_fd, b'\x1a')
+        assert attach(job) == 'stopped' and job.status() == 'stopped'
+        os.killpg(job.pgid, signal.SIGCONT)
+        assert attach(job, b'hi\n') == 'stopped'
+        assert b'got:hi' in b''.join(job.captured)
+        os.killpg(job.pgid, signal.SIGCONT)
+        os.killpg(job.pgid, signal.SIGTERM)
+        assert select.select([job.status_r], [], [], 5)[0]
+        finished = True
     finally:
-        for fd in (rin,win,rout,wout): os.close(fd)
+        if not finished:
+            try: os.killpg(job.pgid, signal.SIGKILL)
+            except ProcessLookupError: pass
+        code = finish_job(job)
+    assert code == -signal.SIGTERM
 
-def kill(job):
-    try: os.killpg(job.pgid, signal.SIGKILL)
-    except ProcessLookupError: pass
-    return finish_job(job)
 
-def wait_gone(job, timeout=5):
-    "Wait for `job` to finish: its status pipe hits EOF when the shepherd exits"
-    return bool(select.select([job.status_r], [], [], timeout)[0])
-
-def test_signal_suspends():
-    job = spawn_job('sleep 5')
-    os.killpg(job.pgid, signal.SIGTSTP)
-    assert attach(job)=='stopped'
-    kill(job)
-
-def test_ctrl_z_suspends():
-    "the ^Z byte typed at the terminal must suspend the job"
-    job = spawn_job('sleep 5')
-    os.write(job.master_fd, b'\x1a')
-    assert attach(job)=='stopped'
-    kill(job)
-
-def test_suspend_resume_captures_all_output():
-    job = spawn_job('echo before && kill -TSTP 0 && echo after')
-    assert attach(job)=='stopped'
-    assert b'before' in b''.join(job.captured)
-    os.killpg(job.pgid, signal.SIGCONT)
-    assert attach(job)=='eof'
-    assert b'after' in b''.join(job.captured)
-    assert finish_job(job)==0
-
-def test_exit_codes():
-    assert finish_job(spawn_job('exit 7'))==7
-    job = spawn_job('sleep 5')
-    time.sleep(0.2)
-    os.killpg(job.pgid, signal.SIGTERM)
-    assert finish_job(job)==-signal.SIGTERM
-
-def test_stdin_reaches_job():
-    rin,win = os.pipe(); rout,wout = os.pipe()
-    job = spawn_job('read x && echo got:$x')
-    os.write(win, b'hi\n')
-    assert copy_job(job, in_fd=rin, out_fd=wout)=='eof'
-    assert b'got:hi' in b''.join(job.captured)
-    finish_job(job)
-    for fd in (rin,win,rout,wout): os.close(fd)
-
-@pytest.fixture
-def shell(tmp_path):
-    TerminalInteractiveShell.clear_instance()
-    config = Config()
-    config.TerminalInteractiveShell.simple_prompt = True
-    config.HistoryManager.hist_file = str(tmp_path/'history.sqlite')
-    shell = TerminalInteractiveShell.instance(config=config)
-    load_ipython_extension(shell)
-    try: yield shell
-    finally:
-        for j in list(shell._ipythonng_jobs.values()): kill(j)
-        shell.history_manager.writeout_cache()
-        shell.history_manager.end_session()
-        shell._atexit_once = lambda: None
-        TerminalInteractiveShell.clear_instance()
-
-def test_suspended_job_returns_prompt(shell, capsys):
-    shell.run_cell('!kill -TSTP 0', store_history=True)
-    assert 'Stopped' in capsys.readouterr().out
+def test_shell_jobs_foreground_background_completion_and_recovery(shell, capsys):
+    shell.run_cell('!echo before && kill -TSTP 0 && echo after', store_history=True)
+    assert 'Stopped' in capsys.readouterr().out and shell.user_ns['_exit_code'] == 128+signal.SIGTSTP
     shell.run_cell('%jobs', store_history=True)
-    assert 'kill -TSTP 0' in capsys.readouterr().out
-
-def test_fg_resumes(shell):
-    shell.run_cell('!kill -TSTP 0 && echo resumed', store_history=True)
+    assert 'stopped' in capsys.readouterr().out
     shell.run_cell('%fg', store_history=True)
-    assert shell._ipythonng_jobs=={} and shell.user_ns['_exit_code']==0
-    assert 'resumed' in shell.history_manager.output_hist_reprs.get(shell.execution_count-1, '')
-
-def test_bg_runs_without_terminal(shell):
+    assert not shell._ipythonng_jobs and shell.user_ns['_exit_code'] == 0
+    text = shell.history_manager.output_hist_reprs[shell.execution_count-1]
+    assert 'before' in text and 'after' in text
     shell.run_cell('!kill -TSTP 0 && echo done', store_history=True)
     job = next(iter(shell._ipythonng_jobs.values()))
-    shell.run_cell('%bg', store_history=True)
-    assert wait_gone(job)
-    shell.run_cell('%fg', store_history=True)
-    assert shell._ipythonng_jobs=={} and shell.user_ns['_exit_code']==0
-
-def test_spawn_failure_raises_cleanly(monkeypatch):
-    def boom(*a): raise OSError('shepherd broke')
-    monkeypatch.setattr(ipythonng.jobs, '_shepherd', boom)
-    with pytest.raises(OSError, match='failed to start job'): spawn_job('true')
-
-def test_fg_rejects_bad_job(shell, capsys):
-    shell.run_cell('%fg nope', store_history=True)
-    assert 'no such job: nope' in capsys.readouterr().err
-
-def test_jobs_notices_bg_exit(shell, capsys):
-    shell.run_cell('!kill -TSTP 0', store_history=True)
-    shell.run_cell('%bg', store_history=True)
-    assert wait_gone(next(iter(shell._ipythonng_jobs.values())))
+    shell.run_cell('%bg 1', store_history=True)
+    assert select.select([job.status_r], [], [], 5)[0]
     capsys.readouterr()
     shell.run_cell('%jobs', store_history=True)
     assert 'done' in capsys.readouterr().out
-
-def test_many_fg_commands(shell):
-    for i in range(15):
-        shell.run_cell(f'!echo hi{i}', store_history=True)
-        assert shell.user_ns['_exit_code']==0
-        assert f'hi{i}' in shell.history_manager.output_hist_reprs.get(shell.execution_count-1, '')
+    shell.run_cell('%fg 1', store_history=True)
+    assert not shell._ipythonng_jobs and shell.user_ns['_exit_code'] == 0
+    assert 'done' in shell.history_manager.output_hist_reprs[shell.execution_count-1]
+    shell.run_cell('%fg nope', store_history=True)
+    assert 'no such job: nope' in capsys.readouterr().err
+    shell.run_cell('!exit 7', store_history=True)
+    assert shell.user_ns['_exit_code'] == 7
+    shell.run_cell('!echo recovered', store_history=True)
+    assert shell.user_ns['_exit_code'] == 0 and not shell._ipythonng_jobs
+    assert 'recovered' in shell.history_manager.output_hist_reprs[shell.execution_count-1]

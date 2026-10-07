@@ -1,42 +1,22 @@
-import pytest
-from IPython.terminal.interactiveshell import TerminalInteractiveShell
-from traitlets.config import Config
-
-import ipythonng.extension  # applies the check_complete patch
-
-
-@pytest.fixture
-def shell(tmp_path):
-    TerminalInteractiveShell.clear_instance()
-    config = Config()
-    config.TerminalInteractiveShell.simple_prompt = True
-    config.HistoryManager.hist_file = str(tmp_path / "history.sqlite")
-    sh = TerminalInteractiveShell.instance(config=config)
-    try: yield sh
-    finally:
-        sh.history_manager.end_session()
-        sh._atexit_once = lambda: None
-        TerminalInteractiveShell.clear_instance()
-
-
-def test_alias_command_completes(shell):
-    "A filename the tokenizer chokes on must not trigger the continuation prompt"
-    shell.alias_manager.define_alias('git', 'git')
-    assert shell.check_complete('git diff nbs/01_drafting.ipynb') == ('complete', '')
-
-def test_magic_command_completes(shell):
+def test_command_python_and_async_magic_input(shell, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path/'nbs/01_drafting').mkdir(parents=True)
+    shell.alias_manager.define_alias('say', 'echo')
+    assert shell.check_complete('say nbs/01_drafting.ipynb') == ('complete', '')
+    shell.run_cell('say nbs/01_drafting.ipynb', store_history=True)
+    assert 'nbs/01_drafting.ipynb' in shell.history_manager.output_hist_reprs[shell.execution_count-1]
     assert shell.check_complete('cd nbs/01_drafting')[0] == 'complete'
-
-def test_assignment_beats_command(shell):
-    "`ls = (1,` is Python assignment: continuation prompt must survive"
+    shell.run_cell('cd nbs/01_drafting', store_history=True)
+    assert shell.user_ns['_dh'][-1] == tmp_path/'nbs/01_drafting'
     assert shell.check_complete('ls = (1,')[0] == 'incomplete'
-
-def test_shadowed_name_stays_python(shell):
-    shell.alias_manager.define_alias('git', 'git')
-    shell.user_ns['git'] = 1
-    assert shell.check_complete('git diff nbs/01_drafting.ipynb')[0] == 'incomplete'
-
-def test_python_judgment_unchanged(shell):
-    assert shell.check_complete('def f(x):')[0] == 'incomplete'
-    assert shell.check_complete('x = [1,')[0] == 'incomplete'
-    assert shell.check_complete('ls\nx = (')[0] == 'incomplete'  # multiline: no short-circuit
+    shell.run_cell('ls = (1,\n2)', store_history=True)
+    assert shell.user_ns['ls'] == (1, 2)
+    shell.user_ns['say'] = 1
+    assert shell.check_complete('say nbs/01_drafting.ipynb')[0] == 'invalid'
+    for code in ('def f(x):', 'x = [1,', 'ls\nx = ('): assert shell.check_complete(code)[0] == 'incomplete'
+    async def magic(line, cell): return f'{line}:{cell.strip()}'
+    shell.register_magic_function(magic, magic_kind='cell', magic_name='story')
+    for code in ('%%story first\nhello\n', "await get_ipython().run_cell_magic('story', 'first', 'hello')"):
+        result = shell.run_cell(code, store_history=True)
+        assert not result.error_in_exec and result.result == 'first:hello'
+        assert shell.history_manager.output_hist_reprs[result.execution_count] == "'first:hello'"

@@ -12,6 +12,7 @@ class TerminalOutput(io.StringIO):
 
 @pytest.fixture
 def shell(tmp_path):
+    cwd = os.getcwd()
     TerminalInteractiveShell.clear_instance()
     config = Config()
     config.TerminalInteractiveShell.simple_prompt = True
@@ -32,3 +33,4 @@ def shell(tmp_path):
         shell.history_manager.end_session()
         shell._atexit_once = lambda: None
         TerminalInteractiveShell.clear_instance()
+        os.chdir(cwd)

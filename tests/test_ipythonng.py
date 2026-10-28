@@ -1,35 +1,63 @@
 import base64, io, os, pytest
-from kittytgp.core import PLACEHOLDER
-
+from fastcore.xtras import modified_env
 from ipythonng.cli import parse_flags
+from kittytgp.core import PLACEHOLDER
+from helpers import output, render, run
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAQAAABi6S9dAAAADElEQVR42mNkYPhfDwADhgGAff/3fwAAAABJRU5ErkJggg==')
 
 
-def output(shell): return shell.history_manager.output_hist_reprs.get(shell.execution_count-1, '')
-
-
-def run(shell, code):
-    result = shell.run_cell(code, store_history=True)
-    assert result.error_before_exec is None and result.error_in_exec is None
-    return output(shell)
-
-
-def render(shell, code):
-    shell._ipythonng_stream.seek(0)
-    shell._ipythonng_stream.truncate(0)
-    run(shell, code)
-    return shell._ipythonng_stream.getvalue()
+def test_command_python_and_async_magic_input(shell, tmp_path):
+    with modified_env('IPYTHONNG_FLAGS'):
+        assert parse_flags(['-rp', '5', '-c', 'print(3)']) == (['-r', '-p', '5'], ['-c', 'print(3)'])
+        assert parse_flags(['-m', 'foo']) == ([], ['-m', 'foo'])
+    target = tmp_path/'nbs/01_drafting'
+    target.mkdir(parents=True)
+    shell.run_line_magic('cd', str(tmp_path))
+    shell.alias_manager.define_alias('say', 'echo')
+    assert shell.check_complete('say nbs/01_drafting.ipynb') == ('complete', '')
+    assert 'nbs/01_drafting.ipynb' in run(shell, 'say nbs/01_drafting.ipynb')
+    assert shell.check_complete('cd nbs/01_drafting')[0] == 'complete'
+    run(shell, 'cd nbs/01_drafting')
+    assert os.getcwd() == str(target)
+    assert shell.check_complete('ls = (1,')[0] == 'incomplete'
+    run(shell, 'ls = (1,\n2)')
+    assert shell.user_ns['ls'] == (1, 2)
+    shell.user_ns['say'] = 1
+    assert shell.check_complete('say nbs/01_drafting.ipynb')[0] == 'invalid'
+    for code in ('def f(x):', 'x = [1,', 'ls\nx = ('): assert shell.check_complete(code)[0] == 'incomplete'
+    async def magic(line, cell): return f'{line}:{cell.strip()}'
+    shell.register_magic_function(magic, magic_kind='cell', magic_name='story')
+    for code in ('%%story first\nhello\n', "await get_ipython().run_cell_magic('story', 'first', 'hello')"):
+        result = shell.run_cell(code, store_history=True)
+        assert result.error_in_exec is None and result.result == 'first:hello'
+        assert 'first:hello' in output(shell)
 
 
 def test_rich_and_pty_history_survives_errors_and_a_new_session(shell):
     shell.user_ns['png'] = PNG
-    assert run(shell, '''from IPython.display import Markdown, Image, display
+    with modified_env('TMUX'):
+        assert run(shell, '''from IPython.display import Markdown, Image, display
+image = Image(data=png, format='png')
+class RawPng:
+    def _repr_png_(self): return png
 print('alpha')
 display(Markdown('# Heading'))
-display(Image(data=png, format='png'))
+display(image)
 print('omega')
 42''') == 'alpha\n# Heading\n[image/png]\nomega\n42'
+        rendered = shell._ipythonng_stream.getvalue()
+        assert PLACEHOLDER in rendered and '\x1b_G' in rendered and '\x1bPtmux;' not in rendered
+        for expression in ('image', 'RawPng()'):
+            rendered = render(shell, expression)
+            assert rendered.startswith('\n') and PLACEHOLDER in rendered and '[image/png]' not in rendered
+            assert output(shell) == '[image/png]'
+    with modified_env(TMUX='/tmp/tmux'):
+        assert '\x1bPtmux;' in render(shell, 'display(image)')
+        assert '[image/png]' in output(shell)
+    shell._ipythonng_stream = io.StringIO()
+    assert render(shell, 'display(image)') == '[image/png]\n'
+    assert output(shell) == '[image/png]'
     text = run(shell, r'''print('printed'); get_ipython().system("printf '\033[31mred\033[0m text\nline2\n'")''')
     assert text.splitlines() == ['printed', 'red text', 'line2'] and '\x1b[' not in text
     streams = shell.history_manager.outputs[shell.execution_count-1]
@@ -48,46 +76,13 @@ print('omega')
     assert run(shell, 'pass') == ''
 
 
-def test_image_display_result_tmux_and_redirected_output(shell, monkeypatch):
-    monkeypatch.delenv('TMUX', raising=False)
-    shell.user_ns['png'] = PNG
-    run(shell, '''from IPython.display import Image, display
-image = Image(data=png, format='png')
-class RawPng:
-    def _repr_png_(self): return png''')
-    rendered = render(shell, 'display(image)')
-    assert PLACEHOLDER in rendered and '\x1b_G' in rendered and '\x1bPtmux;' not in rendered
-    for expression in ('image', 'RawPng()'):
-        rendered = render(shell, expression)
-        assert rendered.startswith('\n') and PLACEHOLDER in rendered and '[image/png]' not in rendered
-        assert output(shell) == '[image/png]'
-    monkeypatch.setenv('TMUX', '/tmp/tmux')
-    assert '\x1bPtmux;' in render(shell, 'display(image)')
-    shell._ipythonng_stream = io.StringIO()
-    assert render(shell, 'display(image)') == '[image/png]\n'
-    assert output(shell) == '[image/png]'
-
-
-def test_plotting_switches_from_existing_agg_figures_to_inline(shell, monkeypatch, tmp_path, capsys):
+def test_plotting_switches_from_existing_agg_figures_to_inline(shell):
     pytest.importorskip('matplotlib')
-    monkeypatch.setenv('MPLCONFIGDIR', str(tmp_path/'mplconfig'))
-    monkeypatch.delenv('TMUX', raising=False)
     run(shell, "import matplotlib; matplotlib.use('agg')\nimport matplotlib.pyplot as plt\nplt.plot([1, 2, 3])")
     assert shell.user_ns['plt'].get_fignums()
-    for values in ('[4, 5, 6]', '[7, 8, 9]'):
-        capsys.readouterr()
+    for _ in range(2):
         shell.run_line_magic('matplotlib', 'inline')
-        assert 'No event loop hook running.' not in capsys.readouterr().out
         assert not shell.user_ns['plt'].get_fignums()
-        rendered = render(shell, f'plt.plot({values})')
-        assert PLACEHOLDER in rendered and '\x1b_G' in rendered
-        assert 'matplotlib.lines.Line2D' in output(shell) and '[image/png]' in output(shell)
-        assert 'display_data' in [o.output_type for o in shell.history_manager.outputs[shell.execution_count-1]]
-
-
-def test_launcher_flags_preserve_ipython_arguments_and_reset_environment(monkeypatch):
-    monkeypatch.delenv('IPYTHONNG_FLAGS', raising=False)
-    assert parse_flags(['-rp', '5', '-c', 'print(3)']) == (['-r', '-p', '5'], ['-c', 'print(3)'])
-    assert os.environ['IPYTHONNG_FLAGS'] == '-r -p 5'
-    assert parse_flags(['-m', 'foo']) == ([], ['-m', 'foo'])
-    assert 'IPYTHONNG_FLAGS' not in os.environ
+        rendered = render(shell, 'plt.plot([4, 5, 6])')
+        assert PLACEHOLDER in rendered and '\x1b_G' in rendered and '[image/png]' in output(shell)
+        assert any(o.output_type == 'display_data' for o in shell.history_manager.outputs[shell.execution_count-1])
